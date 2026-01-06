@@ -1,5 +1,4 @@
 // api/fill-estimate.js
-// Vercel Function
 // POST body: { imageDataUrl: "data:image/jpeg;base64,..." }
 // Returns: { percent_full: 0..100, fill_fraction: 0..1 }
 
@@ -10,7 +9,6 @@ function parseDataUrl(dataUrl) {
 }
 
 function extractPercent(text) {
-  // Accept "70", "70%", "The bottle is ~70% full"
   const m = String(text || "").match(/(\d{1,3})/);
   if (!m) return null;
   const n = Number(m[1]);
@@ -18,8 +16,44 @@ function extractPercent(text) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+async function callGemini({ apiKey, mimeType, data, prompt }) {
+  const model = "gemini-3-flash-preview";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType, data } },
+        ],
+      },
+    ],
+    generationConfig: {
+      // IMPORTANT: give enough budget so Gemini can "think" AND still output the integer
+      maxOutputTokens: 128,
+      temperature: 0.2,
+      // Helps keep output short/one-line
+      stopSequences: ["\n"],
+    },
+  };
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const json = await resp.json().catch(() => null);
+  return { ok: resp.ok, status: resp.status, json };
+}
+
 export default async function handler(req, res) {
-  // CORS (lets localhost call your Vercel API)
+  // CORS for local dev
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -29,9 +63,7 @@ export default async function handler(req, res) {
 
   try {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: "Missing GEMINI_API_KEY on Vercel" });
-    }
+    if (!apiKey) return res.status(500).json({ error: "Missing GEMINI_API_KEY on Vercel" });
 
     const { imageDataUrl } = req.body || {};
     if (!imageDataUrl || typeof imageDataUrl !== "string") {
@@ -40,16 +72,11 @@ export default async function handler(req, res) {
 
     const parsed = parseDataUrl(imageDataUrl);
     if (!parsed) {
-      return res.status(400).json({
-        error: "imageDataUrl must be a data URL like data:image/jpeg;base64,...",
-      });
+      return res.status(400).json({ error: "imageDataUrl must be data:image/...;base64,..." });
     }
 
-    // Gemini REST endpoint (no SDK)
-    const model = "gemini-3-flash-preview";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
-    const prompt = `
+    // Detailed prompt (Gemini-style reasoning) but still forces a single integer output
+    const detailedPrompt = `
 Estimate how full the liquid container is in the photo on a 0–100 scale.
 
 Use this method BEFORE deciding the number:
@@ -63,57 +90,56 @@ Return ONLY a single integer from 0 to 100.
 No words. No % sign. No extra characters.
 `.trim();
 
-    const body = {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: parsed.mimeType,
-                data: parsed.data,
-              },
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 20
-      }
-    };
+    // Ultra-simple fallback prompt (if Gemini returns no visible text)
+    const fallbackPrompt = `
+Return ONLY one integer from 0 to 100 for how full the container is.
+No words. No symbols.
+`.trim();
 
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey
-      },
-      body: JSON.stringify(body),
+    // 1) Try detailed prompt
+    let r = await callGemini({
+      apiKey,
+      mimeType: parsed.mimeType,
+      data: parsed.data,
+      prompt: detailedPrompt,
     });
 
-    const json = await resp.json().catch(() => null);
-
-    if (!resp.ok) {
-      return res.status(resp.status).json({
-        error: "Gemini API error",
-        detail: json || null,
-      });
+    if (!r.ok) {
+      return res.status(r.status).json({ error: "Gemini API error", detail: r.json });
     }
 
-    const text =
-      json?.candidates?.[0]?.content?.parts
+    let text =
+      r.json?.candidates?.[0]?.content?.parts
         ?.map((p) => p?.text)
         .filter(Boolean)
         .join(" ") || "";
+
+    // If Gemini spent tokens on "thinking" and returned no text, retry with fallback prompt
+    if (!text) {
+      r = await callGemini({
+        apiKey,
+        mimeType: parsed.mimeType,
+        data: parsed.data,
+        prompt: fallbackPrompt,
+      });
+
+      if (!r.ok) {
+        return res.status(r.status).json({ error: "Gemini API error", detail: r.json });
+      }
+
+      text =
+        r.json?.candidates?.[0]?.content?.parts
+          ?.map((p) => p?.text)
+          .filter(Boolean)
+          .join(" ") || "";
+    }
 
     const percent = extractPercent(text);
     if (percent == null) {
       return res.status(500).json({
         error: "Could not parse percent from Gemini output",
         raw: text,
-        detail: json,
+        detail: r.json,
       });
     }
 

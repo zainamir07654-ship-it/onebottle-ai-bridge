@@ -20,12 +20,14 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
   try {
-    const { imageDataUrl } = req.body || {};
+    const { imageDataUrl, referenceDataUrl } = req.body || {};
     if (!imageDataUrl || typeof imageDataUrl !== "string") {
-      return res.status(400).json({
-        error: "Missing imageDataUrl. Send a string like data:image/jpeg;base64,....",
-      });
-    }
+  return res.status(400).json({ error: "Missing imageDataUrl" });
+}
+
+if (!referenceDataUrl || typeof referenceDataUrl !== "string") {
+  return res.status(400).json({ error: "Missing referenceDataUrl (full bottle photo)" });
+}
 
     const response = await openai.responses.parse({
       model: "gpt-4o-mini",

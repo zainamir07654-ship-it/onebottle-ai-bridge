@@ -30,32 +30,27 @@ if (!referenceDataUrl || typeof referenceDataUrl !== "string") {
 }
 
     const response = await openai.responses.parse({
-      model: "gpt-4o-mini",
-      input: [
+  model: "gpt-4o-mini",
+  input: [
+    {
+      role: "user",
+      content: [
         {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "Task: estimate how full a transparent bottle/container is.\n" +
-                "Return fill_fraction between 0 and 1 (1=full, 0=empty).\n" +
-                "If you can't clearly see a waterline due to glare, reflections, labels, background clutter, angle, or opacity, set needs_manual=true and confidence low.\n" +
-                "Be conservative. Only high confidence if the waterline is genuinely visible.\n" +
-                "Output MUST match the JSON schema.",
-            },
-            { type: "input_image", image_url: imageDataUrl },
-          ],
+          type: "input_text",
+          text:
+            "You will receive TWO images of the SAME transparent bottle/container.\n" +
+            "Image A is the bottle when FULL (reference). Image B is the bottle NOW.\n" +
+            "Task: estimate how full Image B is as a fraction of the FULL reference.\n" +
+            "Use the visible waterline height relative to the container height.\n" +
+            "If the waterline in Image B is not clearly visible OR the bottle seems different, set needs_manual=true and confidence <= 0.5.\n" +
+            "Return fill_fraction between 0 and 1.\n" +
+            "Do NOT guess 0.5 unless the waterline supports it.\n" +
+            "Output MUST match the schema."
         },
+        { type: "input_image", image_url: referenceDataUrl }, // Image A: FULL
+        { type: "input_image", image_url: imageDataUrl }       // Image B: NOW
       ],
-      text: { format: zodTextFormat(FillEstimate, "fill_estimate") },
-    });
-
-    return res.status(200).json(response.output_parsed);
-  } catch (err) {
-    console.error(err);
-    return res
-      .status(500)
-      .json({ error: "Server error", detail: String(err?.message || err) });
-  }
-}
+    },
+  ],
+  text: { format: zodTextFormat(FillEstimate, "fill_estimate") },
+});

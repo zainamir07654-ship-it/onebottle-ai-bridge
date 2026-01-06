@@ -1,20 +1,13 @@
-import { GoogleGenAI, MediaResolution } from "@google/genai";
-import { z } from "zod";
-
-// Output: ONLY one integer 0..100
-const OutputSchema = z.object({
-  percent_full: z.number().int().min(0).max(100),
-});
+import { GoogleGenAI } from "@google/genai";
 
 function parseDataUrl(dataUrl) {
-  // Expected: data:image/jpeg;base64,AAAA...
   const m = String(dataUrl || "").match(/^data:(.+);base64,(.*)$/);
   if (!m) return null;
   return { mimeType: m[1], base64: m[2] };
 }
 
 export default async function handler(req, res) {
-  // Basic CORS (helps when calling from localhost / browser)
+  // CORS (helps local dev)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -40,22 +33,18 @@ export default async function handler(req, res) {
     // Gemini 3 Flash (preview)
     const model = "gemini-3-flash-preview";
 
-    // Prompt: force the “Gemini-app-like” landmark reasoning, but return ONLY the number.
     const prompt =
       "Estimate the water level in this bottle/container on a scale of 0–100%.\n" +
       "\n" +
       "Use this method BEFORE deciding the number:\n" +
-      "1) Find the container TOP boundary and BOTTOM boundary.\n" +
+      "1) Find the container TOP and BOTTOM.\n" +
       "2) Find the liquid surface line (waterline/meniscus).\n" +
-      "3) Use stable landmarks (labels/logos/printed text/handle joints) as anchors.\n" +
-      "4) Consider geometry: tapering means height is not perfectly proportional to volume.\n" +
-      "5) Consider camera angle: if shot from above/below, compensate conservatively.\n" +
+      "3) Use stable landmarks (labels/logos/handle joints/printed text) as anchors.\n" +
+      "4) Consider tapering: height may not equal volume.\n" +
+      "5) Consider camera angle and glare.\n" +
       "\n" +
-      "Return ONLY JSON in this exact format: { \"percent_full\": <integer 0..100> }.\n" +
-      "Do not include any extra keys or text.";
-
-    // Zod v4 -> JSON Schema for Gemini structured outputs
-    const responseJsonSchema = z.toJSONSchema(OutputSchema);
+      "Return ONLY JSON exactly like this (no extra keys): {\"percent_full\": 0}\n" +
+      "percent_full must be an INTEGER between 0 and 100.";
 
     const response = await ai.models.generateContent({
       model,
@@ -69,28 +58,34 @@ export default async function handler(req, res) {
         },
       ],
       config: {
-        // Make Gemini “look harder” at the image
-        mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
-
-        // Make responses deterministic (less creative)
+        // Keep it stable / measurement-like
         temperature: 0.2,
-
-        // Gemini 3 Flash supports these levels; "high" can be slower but more careful
+        // Encourage more careful reasoning (supported by Gemini 3)
         thinkingConfig: { thinkingLevel: "medium" },
 
-        // Force strict JSON output
+        // Force JSON output (best-effort)
         responseMimeType: "application/json",
-        responseJsonSchema,
 
-        // Keep output short
         maxOutputTokens: 80,
       },
     });
 
-    const raw = JSON.parse(response.text);
-    const out = OutputSchema.parse(raw);
+    // Parse JSON safely
+    let obj;
+    try {
+      obj = JSON.parse(response.text);
+    } catch {
+      // If it returns non-JSON for any reason, try to extract a number
+      const m = String(response.text).match(/(\d{1,3})/);
+      if (!m) throw new Error("Model did not return JSON or a number");
+      obj = { percent_full: Number(m[1]) };
+    }
 
-    return res.status(200).json(out);
+    const percent = Number(obj?.percent_full);
+    if (!Number.isFinite(percent)) throw new Error("percent_full missing");
+    if (percent < 0 || percent > 100) throw new Error("percent_full out of range");
+
+    return res.status(200).json({ percent_full: Math.round(percent) });
   } catch (err) {
     return res.status(500).json({
       error: "Gemini request failed",

@@ -8,7 +8,7 @@ const FillEstimate = z.object({
   fill_fraction: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
   needs_manual: z.boolean(),
-  reason: z.string().optional(),
+  reason: z.string(),
 });
 
 export default async function handler(req, res) {
